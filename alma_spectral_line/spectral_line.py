@@ -24,7 +24,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 from contextlib import redirect_stdout
 
-from sjmm_util.general_utils import rebin, find_map_peak
+from sjmm_util.datatools import rebin, find_map_peak
 from .utils import distance_array
 
 def spw_band_from_path(path=None,cub=None):
