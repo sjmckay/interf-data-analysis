@@ -123,6 +123,7 @@ def compute_rms(map, exclude_r=None, mask=None, sigma=3.0, maxiters=5,copy=True)
     if copy: nmap = map.copy()
     else: nmap=map
     center = nmap.shape[1] / 2.0, nmap.shape[0] / 2.0
+    
     # make exclusion mask
     dist = distance_array(nmap, center)
     exclusion_mask = np.zeros_like(nmap, dtype=bool)
@@ -130,12 +131,13 @@ def compute_rms(map, exclude_r=None, mask=None, sigma=3.0, maxiters=5,copy=True)
         exclusion_mask |= dist < exclude_r
     if mask is not None:
         exclusion_mask |= mask
+    
     # Apply exclusion mask
     data = nmap[~exclusion_mask]
+    
     # Drop NaNs and zeros 
     data = data[~np.isnan(data)]
     data = data[data != 0]
-    n_total = len(data)
     clipped = sigma_clip(data, sigma=sigma, maxiters=maxiters, stdfunc=np.nanstd)
     rms = np.nanstd(clipped.data[~clipped.mask])
     nsamples = len(clipped.data[~clipped.mask])
@@ -299,8 +301,7 @@ def filtered_peaks(run_name, source, coord, cub, pbspec, pbim, rms_r=10, verbose
             results = Parallel(n_jobs=ncores)(
                 delayed(filter_and_id_peaks)(run_name, coord, copies[i], pbspec_arr, pbcut_arr, freqs,
                                          hdr, vr/2.355/dv, dv,  rms_r=rms_r,verbose=verbose,norm=norm) 
-                                         for i, vr in enumerate(velres)
-        )
+                                         for i, vr in enumerate(velres))
     else:
         results=[]
         for i, vr in enumerate(velres):
