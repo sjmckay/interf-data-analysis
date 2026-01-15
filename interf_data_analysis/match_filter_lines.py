@@ -186,8 +186,8 @@ def filter_and_id_peaks(coord, im, pbspec, pbim, freqs, w, sig, dv, rms_r=10, no
     return peak_info
     
 
-def match_filter_pipeline(run_name, source, coord, cub, pbspec, pbim, rms_r=10, velres = [100, 300, 600, 900], verbose=False, 
-                   parallel=False):
+def match_filter_cube(run_name, source, coord, cub, pbspec, pbim, rms_r=10, velres = [100, 300, 600, 900], 
+                      verbose=False, parallel=False):
     """Copy a spectral cube and smooth it with varying gaussian filters, testing for the highest significance peak
     
     Parameters
@@ -246,3 +246,50 @@ def match_filter_pipeline(run_name, source, coord, cub, pbspec, pbim, rms_r=10, 
     return bestresult
 
 
+def match_filter_pipeline(run_name, source, coord, get_paths, load_pb, load_pbspec, r=0.0, rms_r=10, snrlim = 3, 
+                            velres=[100,300,600,900], save_dir=None, verbose=False, 
+                            parallel=False):
+    """Run matched filter pipeline for a given target source over all data cubes in which it appears.
+
+    Parameters
+    ----------
+    run_name (str): name of the run (for logging purposes)
+    source (str): name of the source (for logging purposes)
+    coord (SkyCoord): sky coordinate of source
+    get_paths (function): function that takes in a source name and returns paths to data cubes
+    load_pb (function): function that takes in a path to a data cube and returns the primary beam image cube
+    load_pbspec (function): function that takes in a path to a data cube and returns the primary beam spectrum
+    r (float): radius in arcseconds of aperture for spectrum extraction. Leave as 0.0 to use single pixel.
+    rms_r (float): radius in arcseconds within which to compute rms for S/N calculation
+    snrlim (float): S/N threshold for reporting results
+    velres (list or array): list of velocity resolutions (FWHM in km/s) for matched filtering kernels
+    save_dir (str): directory in which to save results, or None to not save
+    verbose (bool): whether to print out progress information
+    parallel (bool): whether to parallelize over different velocity resolutions 
+
+    Returns
+    -------
+    final_source_info (dict): dictionary with results from matched filtering for all cubes for this source
+    """
+    
+    paths = get_paths(source)
+    final_source_info = {}
+    print('\n**********************************************************')
+    print(f'\nStarting to analyze source {source}....')
+
+    for path in paths:
+        cub = load_cube(path)
+        pbspec = load_pbspec(path)
+        pbim = load_pb(path)
+        result = match_filter_cube(run_name, source, coord, cub, pbspec, pbim, 
+                                   rms_r=rms_r, velres=velres, verbose=verbose,parallel=parallel)
+        if result is not None:
+            result['source']=source
+            result['path']=path
+            final_source_info[f'path_{path.split("/")[-1]}'] = result
+    if save_dir is not None: 
+        final_source_info.write(f'{save_dir}/{source}_filter_r{r:.1f}_snrlim{snrlim:.1f}.fits',
+                                       overwrite=True)
+    print(f'\nFinished source {source}.\n\n')
+
+    return final_source_info
