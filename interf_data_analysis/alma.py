@@ -142,3 +142,7 @@ def path_from_spw_band(source, path_to_data, spw, band):
             corr_paths.append(p)
     return corr_paths
 
+
+
+
+## TODO: add constants, other ALMA specific functions
