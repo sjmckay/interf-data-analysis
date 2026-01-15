@@ -1,9 +1,11 @@
+from io import StringIO
+from contextlib import redirect_stdout
 import numpy as np
 import astropy.units as u
 import astropy.constants as con
 from astropy.cosmology import FlatLambdaCDM
-import matplotlib.pyplot as plt
-cosmo = FlatLambdaCDM(H0=70.0, Om0=0.30) 
+cosmo = FlatLambdaCDM(H0=70.0, Om0=0.30)
+
 
 
 LINES = {
@@ -36,6 +38,13 @@ def convert_v(oldv, ref, to='vel',fro='freq'):
             newv = ref/oldv - 1.0 # z=f0/f
     return newv
 
+def sig2fwhm_kms(sigma, dv):
+    '''Convert Gaussian sigma (in channels) to FWHM in km/s, given channel width dv in km/s'''
+    return sigma * dv * 2.0* np.sqrt(2.0 * np.log(2.0))
+
+def fwhm_kms2sig(fwhm, dv):
+    '''Convert Gaussian FWHM (in km/s) to sigma in channels, given channel width dv in km/s'''
+    return fwhm / (dv * 2.0* np.sqrt(2.0 * np.log(2.0)))
 
 def get_z(freq, obs):
     return np.round(freq/obs-1,3)
@@ -68,26 +77,3 @@ def redshift2lines(z):
     for line in LINES.keys():
         dt[line] = LINES[line] / (1.+z)
     return dt
-
-def gauss(x, *p0):
-    mu, sigma, N = p0
-    return 10**N*1./np.sqrt(2*np.pi*sigma**2) * np.exp(-(x-mu)**2/(2*sigma**2))
-
-def plot_map(mapi):
-    '''convenience function to plot a map extracted from a cube (using correct transposition/axes)'''
-    _,ax = plt.subplots()
-    sc = ax.imshow(mapi.T, origin='lower')
-    ax.colorbar(sc)
-    plt.show()
-
-def distance_array(map, center):
-    '''create array of euclidean distance between array elements and "center" pixel (in numpy format, i.e., y, x)
-    
-    center=(px,py)
-    map[py,px] = center_val
-    '''
-    x = np.arange(map.shape[0]) 
-    y = np.arange(map.shape[1])
-    Y,X = np.meshgrid(y,x)
-    dist = np.sqrt((X-center[1])**2 + (Y-center[0])**2)
-    return dist

@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 pd.set_option('display.max_rows', None)
-from interferopy.cube import Cube
 import interferopy.tools as iftools
 import os
 from scipy.ndimage import correlate1d
@@ -17,78 +16,17 @@ from astropy.cosmology import FlatLambdaCDM
 from astropy.stats import sigma_clip
 cosmo = FlatLambdaCDM(H0=70.0, Om0=0.30) 
 
-import io
 import warnings
 warnings.filterwarnings("ignore", category=FITSFixedWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
-from contextlib import redirect_stdout
 
-from sjmm_util.datatools import rebin, find_map_peak
-from .utils import distance_array
-
-def spw_band_from_path(path=None,cub=None):
-    '''
-    Get spectral window and ALMA band for a given path/existing cube.
-
-    Parameters
-    ----------
-    path (str): path for which to get spw and band
-
-    cub: Cube object from interferopy, used to limit reading in from disk
-
-    Returns
-    -------
-    spw (int): spectral window number (usually one of 25,27,29,31)
-
-    band (int): ALMA band (currently only supports bands 3,4,6)
-
-    folder (str): folder (per science goal for ALMA) that is unique to that path (e.g., Xc252)--only
-        used to distinguish sources later on
-    '''
-    f = io.StringIO()
-    if path is None: path = cub.filename
-    try:
-        spw = int(path.split('spw')[1].split('.')[0])
-    except ValueError:
-        print(f'path ({path}) had incorrect format for IDing spectral window')
-    if cub is None:
-        with redirect_stdout(f):
-            cub = Cube(path)
-    freq = cub.reffreq
-    if freq < 130 and freq > 80:
-        band = 3
-    elif freq < 180 and freq > 130:
-        band = 4
-    elif freq < 330 and freq > 180:
-        band = 6
-    else:
-        raise ValueError(f'The reference frequency ({freq} GHz) is not within the expected bands.')
-
-    try:
-        folder = path.split('/science_goal.')[1].split('/')[0].split('_')[-1]
-    except Exception as e:
-        warnings.warn(f'Could not determine folder for path {path}, raised exception {e}')
-        folder = ''
-    return spw, band, folder
-    
-
-def copy_sliced_cube(cub, coord, pbim, rms_r=10,ncopies=1):
-    """make repeated copies of portion of cube, retaining a square of side s=2*rms_r arcseconds around the coordinate"""
-    w = cub.wcs
-    w2 = w.copy()
-    if w2.naxis > 2: w2=w2.dropaxis(2)
-    pbcut = Cutout2D(pbim, position=coord, size=2*rms_r*u.arcsec, wcs=w2, copy=True, mode='trim')
-    newwcs = pbcut.wcs
-    slices = pbcut.slices_original
-    cut = cub.im[slices[1],slices[0],:]
-    cut=np.swapaxes(cut,0,1)
-    if ncopies == 1: return cut, pbcut, newwcs
-    copies=[np.copy(cut) for _ in range(ncopies)]
-    return copies, pbcut.data[:,:,np.newaxis], newwcs
+from .array_utils import distance_array, rebin, find_map_peak, load_cube, copy_sliced_cube
+from .noise import compute_2d_rms, get_channel_err
+from .redshift_utils import convert_v, sig2fwhm_kms, fwhm_kms2sig
 
 def rebin_spectrum_err(freqs, spectrum, err, rebin_factor):
-    '''Rebin a spectrum using averaging.
+    '''Rebin a spectrum using averaging. 
     
     Parameters
     ----------
@@ -116,32 +54,6 @@ def rebin_spectrum_err(freqs, spectrum, err, rebin_factor):
     # one can neatly fit the data in the rebinned shape
     freq_rebin = freqs[rebin_factor//2:(len(freqs)//rebin_factor)*rebin_factor:rebin_factor] 
     return  freq_rebin, spec_rebin, err_rebin
-
-
-def compute_rms(map, exclude_r=None, mask=None, sigma=3.0, maxiters=5,copy=True):
-    """get rms of 2d linemap, using optional mask and exclusion radius (inside which will be blanked out)"""
-    if copy: nmap = map.copy()
-    else: nmap=map
-    center = nmap.shape[1] / 2.0, nmap.shape[0] / 2.0
-    
-    # make exclusion mask
-    dist = distance_array(nmap, center)
-    exclusion_mask = np.zeros_like(nmap, dtype=bool)
-    if exclude_r is not None:
-        exclusion_mask |= dist < exclude_r
-    if mask is not None:
-        exclusion_mask |= mask
-    
-    # Apply exclusion mask
-    data = nmap[~exclusion_mask]
-    
-    # Drop NaNs and zeros 
-    data = data[~np.isnan(data)]
-    data = data[data != 0]
-    clipped = sigma_clip(data, sigma=sigma, maxiters=maxiters, stdfunc=np.nanstd)
-    rms = np.nanstd(clipped.data[~clipped.mask])
-    nsamples = len(clipped.data[~clipped.mask])
-    return rms, nsamples
     
     
 def flux_snr_2D(linemap, wcsi, coord=None, rms_r = 10, search_r = 1):
@@ -153,7 +65,7 @@ def flux_snr_2D(linemap, wcsi, coord=None, rms_r = 10, search_r = 1):
     py,px = find_map_peak(linemap,mask=mask) 
     peakflux = linemap[py,px] # double check order of axes
     rmsmask = dist>rms_r*ppas
-    rms,nsamples = compute_rms(linemap,exclude_r=2.0*ppas, mask = rmsmask)
+    rms,nsamples = compute_2d_rms(linemap,exclude_r=2.0*ppas, mask = rmsmask)
     snr = peakflux/rms
     ra,dec = wcsi.all_pix2world(px,py,0) #pass (ra,dec) --> (ra,dec)
     newcoord = SC(ra, dec, unit='deg')
@@ -161,24 +73,18 @@ def flux_snr_2D(linemap, wcsi, coord=None, rms_r = 10, search_r = 1):
     return newcoord, (px,py), peakflux, rms, snr, nsamples 
 
 
-def get_err(cub_pbcor, r=0.,ra=None,dec=None, pbim=None, pbspec=None): 
-    """Determine rms error in cube by channel, similar to interferopy get_err function but with modifications"""
-    if pbim is None: pbim = 1.0
-    elif pbim.ndim < 3:
-        pbim = pbim[..., np.newaxis]
-    if pbspec is None: pbspec=1.0
-    im_uncor = cub_pbcor.im * pbim
-    mask = False
-    bc_mask = np.broadcast_to(mask, im_uncor.shape)
-    im_uncor[bc_mask]=np.nan
-    rms = np.zeros(im_uncor.shape[2])
-    for i in range(im_uncor.shape[2]):
-        rms[i] = iftools.calcrms(im_uncor[:,:,i])
-    err = rms/pbspec
-    if r>0.:
-        npix = np.pi*(r/cub_pbcor.pixsize)**2
-        err *= np.sqrt(npix / cub_pbcor.beamvol)
-    return err
+def aperture_spectrum(cub, w=None, coord=None, r=0.5, pbim=None, pbspec=None):
+    '''wrapper function for measuring a spectrum and err in a circular aperture, using interferopy.cube.Cube'''
+    if coord is not None: ra,dec=coord.ra, coord.dec
+    else: ra, dec = None, None
+    if not hasattr(cub,'im'): #if not dealing with an interferopy.Cube
+        if w is None:
+            raise Exception('Either a Cube or a WCS object must be supplied.')
+        spectrum, err = get_spec_err(cub, w=w, ra=ra, dec=dec, pbim=pbim, pbspec=pbspec)
+    else: 
+        err  = get_channel_err(cub,r=r,ra=ra,dec=dec,pbim=pbim, pbspec=pbspec)
+        spectrum = cub.aperture_value(ra=ra, dec=dec, radius=r, calc_error=False)
+    return spectrum, err
 
 
 def gaussian_kernel(sigma, radius, norm):
@@ -193,11 +99,12 @@ def gaussian_kernel(sigma, radius, norm):
         phi_x = phi_x / (1.0/np.sqrt(2))
     elif norm=='peak':
         phi_x = phi_x/ np.sum(np.power(phi_x,2))
-    elif norm == 'avg':
+    elif norm == 'avg': 
         phi_x =phi_x / phi_x.sum()
-    elif norm == 'snr':
+    elif norm == 'snr': 
         phi_x =phi_x / np.sqrt(np.sum(np.power(phi_x,2)))
     return phi_x
+
 
 def filter1d(data, sigma, norm = 'avg',axis=-1, output=None, mode="reflect", cval=0.0, truncate=4.0,):
     """copy of scipy.ndimage.gaussian_filter1d with modified gaussian kernel normalizations"""
@@ -209,33 +116,41 @@ def filter1d(data, sigma, norm = 'avg',axis=-1, output=None, mode="reflect", cva
     return correlate1d(data, weights, axis, output, mode, cval, 0)
 
 
-def get_spec_err_ndarray(im_pbcor, w, ra,dec, pbim=None, pbspec=None): 
-    "retrieve spectrum and err in ndarray (no WCS information)"
+def get_spec_err(im, w=None, ra=None, dec=None, pbim=None, pbspec=None): 
+    """
+    Get spectrum and error at given ra, dec from image and wcs
+    
+    Parameters
+    ----------
+
+    im (array): image cube (y,x,chan), typically assumed to be primary-beam corrected.
+    w (WCS): WCS object corresponding to image cube, optional
+    ra (float): right ascension in degrees, or pixel x if w is None
+    dec (float): declination in degrees, or pixel y if w is None
+    pbim (array): primary beam image cube (y,x) or (y,x,chan). If None, assumes im is not pb corrected.
+    pbspec (array): primary beam spectrum (chan), or None. If None, no pb spec correction is done.
+
+    Returns
+    -------
+    spectrum (array): spectrum at given ra, dec
+    err (array): error in spectrum at given ra, dec
+    """
     if pbim is None: pbim = 1.0
     elif pbim.ndim < 3:
         pbim = pbim[..., np.newaxis]
-    if pbspec is None: pbspec=1.0
-    im_uncor = im_pbcor * pbim
-    px,py = w.world_to_pixel(SC(ra,dec,unit='deg'))
-    spectrum = im_pbcor[int(np.round(py,0)),int(np.round(px,0)),:]
-    rms = np.zeros(im_uncor.shape[2])
-    for i in range(im_uncor.shape[2]):
-        rms[i] = iftools.calcrms(im_uncor[:,:,i]) #compute rms in each channel
-    err = rms/pbspec
+    im_uncor = im * pbim # uncorrect for primary beam (consistent noise characteristics)
+    if w is not None: px,py = w.world_to_pixel(SC(ra,dec,unit='deg'))
+    else: px,py = ra, dec
+    spectrum = im[int(np.round(py,0)),int(np.round(px,0)),:]
+    err = get_channel_err(im_uncor, pbspec=pbspec)
     return spectrum, err
 
-def get_spectrum(cub, w=None, coord=None, r=0.5, pbim=None, pbspec=None):
-    '''wrapper function for measuring a spectrum and err in a circular aperture, using interferopy.cube.Cube'''
-    if coord is not None: ra,dec=coord.ra, coord.dec
-    else: ra, dec = None, None
-    if not hasattr(cub,'im'): #if not dealing with an interferopy.Cube
-        if w is None:
-            raise Exception('Either a Cube or a WCS object must be supplied.')
-        spectrum, err = get_spec_err_ndarray(cub,w=w, ra=ra,dec=dec,pbim=pbim, pbspec=pbspec)
-    else: 
-        err  = get_err(cub,r=r,ra=ra,dec=dec,pbim=pbim, pbspec=pbspec)
-        spectrum = cub.aperture_value(ra=ra, dec=dec, radius=r, calc_error=False)
-    return spectrum, err
+def id_spectrum_peak(spectrum):
+    try:
+        peak = np.nanargmax(spectrum) #this may not be the best peak ID design
+    except ValueError:
+        peak = 0
+    return peak
 
 
 def filter_and_id_peaks(coord, im, pbspec, pbim, freqs, w, sig, dv, rms_r=10, norm='avg'):
@@ -247,15 +162,11 @@ def filter_and_id_peaks(coord, im, pbspec, pbim, freqs, w, sig, dv, rms_r=10, no
     if not type(coord) == SC:
         coord=SC(*coord,unit='deg')
     uncor = im*pbim
-    kernel_kms = int(round(sig*dv*2.355)) #FWHM of kernel in km/s
+    kernel_kms = sig2fwhm_kms(sig, dv) #FWHM of kernel in km/s
     smoothed = filter1d(uncor, sigma = sig, axis=2, norm=norm)
     px,py = w.world_to_pixel(coord)
     spectrum = smoothed[int(np.round(py,0)),int(np.round(px,0)),:]
-    try:
-        peak = np.nanargmax(spectrum) #this may not be the best peak ID design
-    except ValueError:
-        peak = 0
-    linefreemask = np.abs(np.arange(len(spectrum))-peak)>4*sig
+    peak = id_spectrum_peak(spectrum)
     updated_coord, (px, py), peakflux, rms, snr, _ = flux_snr_2D(smoothed[:,:,peak]*dv, w, coord=coord, 
                                                                rms_r = rms_r, search_r = 0.5)
     #measure flux and rms
@@ -271,22 +182,37 @@ def filter_and_id_peaks(coord, im, pbspec, pbim, freqs, w, sig, dv, rms_r=10, no
     peak_info['flux_err'] = peakflux/snr
     peak_info['snr'] = snr
     peak_info['filter_size']= kernel_kms
-    peak_info['cont']= cont
 
     return peak_info
     
 
-def filtered_peaks(run_name, source, coord, cub, pbspec, pbim, rms_r=10, verbose=False, 
-                   parallel=False,norm='avg'):
-    """Copy a spectral cube and smooth it with varying gaussian filters, testing for the highest significance peak"""
-    spw, band, folder = spw_band_from_path(cub.filename)
-    if verbose: print('\n**********************************************************')
-    if verbose: print(f'\nIdentifying peaks for source {source} in band {band}, spw {spw}...\n')
+def match_filter_pipeline(run_name, source, coord, cub, pbspec, pbim, rms_r=10, velres = [100, 300, 600, 900], verbose=False, 
+                   parallel=False):
+    """Copy a spectral cube and smooth it with varying gaussian filters, testing for the highest significance peak
+    
+    Parameters
+    ----------
+    
+    run_name (str): name of the run (for logging purposes)
+    source (str): name of the source (for logging purposes)
+    coord (SkyCoord): sky coordinate of source
+    cub (Cube): interferopy Cube object
+    pbspec (array): primary beam spectrum (chan)               
+    pbim (array): primary beam image cube (y,x) or (y,x,chan)
+    rms_r (float): radius in arcseconds outside of which to compute rms for S/N calculation
+    velres (list): list of velocity resolutions (FWHM in km/s) for matched filtering kernels
+    verbose (bool): whether to print out progress information
+    parallel (bool): whether to parallelize over different velocity resolutions
 
-    path = cub.filename
+    Returns
+    -------
+    bestresult (dict): dictionary with results from matched filtering, chosen as the highest S/N among different kernel sizes
+    """
+    if verbose: print('\n**********************************************************')
+    if verbose: print(f'Running matched filter for source {source}...')
+    if verbose: print('**********************************************************\n')
+
     dv=cub.deltavel()
-    velres = [200, 225, 250, 275, 300, 325, 350, 375, 400, 425, 450, 500, 
-              525, 550, 575, 600, 650, 700, 750, 800, 900, 1000, 1200, 1500]
     freqs = np.array(cub.freqs)
     if verbose: print('Making smoothed cubes...')
     #make copies of relevant portion of cube for different smoothings
@@ -300,14 +226,14 @@ def filtered_peaks(run_name, source, coord, cub, pbspec, pbim, rms_r=10, verbose
         with parallel_backend("loky"): #parallelize for speed
             results = Parallel(n_jobs=ncores)(
                 delayed(filter_and_id_peaks)(run_name, coord, copies[i], pbspec_arr, pbcut_arr, freqs,
-                                         hdr, vr/2.355/dv, dv,  rms_r=rms_r,verbose=verbose,norm=norm) 
+                                         hdr, fwhm_kms2sig(vr, dv), dv,  rms_r=rms_r,verbose=verbose,norm='avg') 
                                          for i, vr in enumerate(velres))
     else:
         results=[]
         for i, vr in enumerate(velres):
-            sig = vr/dv/2.355
+            sig = fwhm_kms2sig(vr, dv)
             results.append(filter_and_id_peaks(run_name, coord, copies[i], pbspec, pbcut.data, freqs,
-                                               w, sig, dv, rms_r=rms_r, verbose=verbose,norm=norm))
+                                               w, sig, dv, rms_r=rms_r, verbose=verbose,norm='avg'))
     if verbose: print("Done.\n")
     snrs = np.array([r['snr'] for r in results])
     try: 
@@ -318,4 +244,5 @@ def filtered_peaks(run_name, source, coord, cub, pbspec, pbim, rms_r=10, verbose
     if verbose: print('Done.\n')
     
     return bestresult
+
 
