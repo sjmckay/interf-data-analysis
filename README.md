@@ -4,9 +4,10 @@ Repo for working with radio interferometric data (primarily from ALMA), characte
 
 Contains:
 
-- `spectral_line.py`: pipeline and useful functions to ID peaks, measure spectral line significance, and compute errors using a Gaussian matched-filtering scheme.
+- `match_filter_line.py`: pipeline and useful functions to detect spectral line signals and measure significance using a Gaussian matched-filtering scheme.
+- `noise.py`: functions for measuring 1D and 2D rms values in data cubes
 - `array_utils.py`: functions for working with ndarrays
-- `redshift_utils.py`: functions for ID'ing spectral lines, converting frequencies and velocities, etc.
+- `redshift_utils.py`: functions for identifying spectral line transitions, converting frequencies and velocities, etc.
 - `alma.py`: functions and constants specific to ALMA... hope to add other telescopes eventually.
 
 
