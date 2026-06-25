@@ -1,6 +1,6 @@
 # interf-data-analysis
 
-Repo for working with radio interferometric data (primarily from ALMA), characterizing noise levels, and performing signal extractions to measure emission lines.
+Repo for end-to-end data pipeline for radio interferometric data (primarily from ALMA), including integrating datasets, cleaning, characterizing noise levels, and performing signal extractions to measure emission lines.
 
 Contains:
 
